@@ -1,0 +1,88 @@
+#include <WiFi.h>
+#include <WiFiServer.h>
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+
+const char* SSID    = "jangwoo";
+const char* PWD     = "Grade510A!";
+
+#define SERVICE_UUID "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+const int    SCAN_TIME = 3;     // seconds
+const int    TX_POWER  = -59;   // 서버 측 txPower 값
+const double N_EXP     = 3.0;   // 경로손실 지수
+
+WiFiServer  httpSrv(80);
+BLEScan*    pBLEScan;
+double      lastDistance = -1.0;
+
+double estimateDistance(int rssi) {
+  return pow(10.0, (TX_POWER - rssi) / (10.0 * N_EXP));
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // 1) Wi-Fi 및 HTTP 서버
+  WiFi.begin(SSID, PWD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("HTTP Server IP: ");
+  Serial.println(WiFi.localIP());
+  httpSrv.begin();
+
+  // 2) BLE 스캔 초기화
+  BLEDevice::init("");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setActiveScan(true);
+}
+
+void loop() {
+  // --- BLE 스캔 및 거리 계산 ---
+  BLEScanResults* results = pBLEScan->start(SCAN_TIME, false);
+  for (int i = 0; i < results->getCount(); i++) {
+    BLEAdvertisedDevice dev = results->getDevice(i);
+    if (dev.haveServiceUUID() && dev.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+      lastDistance = estimateDistance(dev.getRSSI());
+      Serial.print("Detected RSSI: ");
+      Serial.print(dev.getRSSI());
+      Serial.print("  -> Distance: ");
+      Serial.print(lastDistance, 2);
+      Serial.println(" m");
+      break;  // 첫 서버만 처리
+    }
+  }
+  pBLEScan->clearResults();
+
+  // --- 간단 HTTP 응답 (HTML 포함) ---
+  WiFiClient client = httpSrv.available();
+  if (client) {
+    // 요청 라인 읽기
+    String req = client.readStringUntil('\r');
+    client.readStringUntil('\n');  // LF 버리기
+
+    if (req.startsWith("GET / ")) {
+      // Meta-refresh 1초, 최소 HTML
+      String html =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n\r\n"
+        "<html><head>"
+        "<meta http-equiv=\"refresh\" content=\"1\">"
+        "</head><body>"
+        "<h1>Distance: " + String(lastDistance, 2) + " m</h1>"
+        "</body></html>";
+      client.print(html);
+    }
+
+    // 남은 헤더 버리기
+    while (client.connected() && client.available()) {
+      client.read();
+    }
+    client.stop();
+  }
+
+  delay(10);
+}
